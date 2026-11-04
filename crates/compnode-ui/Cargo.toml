@@ -1,0 +1,11 @@
+[package]
+name = "compnode-ui"
+description = "Headless editor layer for compnode: sockets, widgets, interaction, undo/redo, theme and draw list (work in progress)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+compnode.workspace = true

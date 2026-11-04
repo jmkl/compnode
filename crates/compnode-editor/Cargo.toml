@@ -1,0 +1,22 @@
+[package]
+name = "compnode-editor"
+description = "compnode editor application: egui shell around compnode-ui, evaluated on the CPU or on the GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["gpu"]
+# Evaluate on the GPU and show the result without a CPU round trip.
+# Keep `wgpu` in compnode-image equal to the wgpu that eframe 0.37 uses
+# (`cargo tree -i wgpu` must show a single version).
+gpu = ["compnode-image/gpu", "eframe/wgpu"]
+
+[dependencies]
+compnode.workspace = true
+compnode-ui.workspace = true
+compnode-image = { workspace = true, features = ["image-io"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "accesskit", "x11", "wayland"] }
+rfd = "0.15"

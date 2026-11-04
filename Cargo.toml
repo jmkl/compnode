@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/compnode",
+  "crates/compnode-ui",
+  "crates/compnode-image",
+  "crates/compnode-editor",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+compnode = { path = "crates/compnode", version = "0.1.0" }
+compnode-ui = { path = "crates/compnode-ui", version = "0.1.0" }
+compnode-image = { path = "crates/compnode-image", version = "0.1.0" }
+
+# Profiles are only honoured at the workspace root.
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"

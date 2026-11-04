@@ -1,0 +1,22 @@
+[package]
+name = "compnode-image"
+description = "Image nodes, dirty-propagating evaluator, CPU reference implementations, loading and export for compnode (optional wgpu backend behind the `gpu` feature)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+# JPEG / WebP export and decoding of common formats through the `image` crate.
+image-io = ["dep:image"]
+# wgpu backend (evaluate the graph on the GPU). Keep the wgpu version equal to
+# the one eframe uses (see `crates/compnode-editor/Cargo.toml`).
+gpu = ["dep:wgpu"]
+
+[dependencies]
+compnode.workspace = true
+compnode-ui.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+wgpu = { version = "30", optional = true }

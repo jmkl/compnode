@@ -1,0 +1,9 @@
+[package]
+name = "compnode"
+description = "Headless, renderer-agnostic node-graph engine built for large graphs: generational arena, spatial indexing, culling, cached wire geometry."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
