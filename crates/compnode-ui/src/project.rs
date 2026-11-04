@@ -8,7 +8,7 @@
 //! value 3 1 f 4
 //! link 2 0 3 0
 //! ```
-use crate::document::{Document, Link, NodeSnapshot};
+use crate::document::{Document, Layer, Link, NodeSnapshot};
 use crate::schema::Registry;
 use crate::value::{ImageHandle, Value};
 use compnode::Color;
@@ -111,6 +111,16 @@ pub fn save(doc: &Document) -> String {
         for (i, v) in s.values.iter().enumerate() {
             out.push_str(&format!("value {} {} {}\n", s.uid, i, value_to_text(v)));
         }
+        // Layer transforms (multi-input canvas nodes), bottom-to-top.
+        for (i, l) in s.layers.iter().enumerate() {
+            out.push_str(&format!(
+                "layer {} {} {} {:?} {:?} {:?} {:?}\n",
+                s.uid, i, l.source, l.center[0], l.center[1], l.size[0], l.size[1]
+            ));
+            if l.angle != 0.0 {
+                out.push_str(&format!("layer_angle {} {} {:?}\n", s.uid, i, l.angle));
+            }
+        }
     }
     for l in doc.all_links() {
         out.push_str(&format!("link {} {} {} {}\n", l.from.0, l.from.1, l.to.0, l.to.1));
@@ -166,6 +176,7 @@ pub fn load(text: &str, registry: Registry) -> Result<Document, String> {
                     muted: int(7).map_err(at)? == 1,
                     collapsed: int(8).map_err(at)? == 1,
                     title,
+                    layers: Vec::new(),
                 });
             }
             "value" => {
@@ -191,6 +202,39 @@ pub fn load(text: &str, registry: Registry) -> Result<Document, String> {
                     to: (int(3).map_err(at)?, int(4).map_err(at)? as usize),
                 });
             }
+            "layer" => {
+                let uid = int(1).map_err(at)?;
+                let idx = int(2).map_err(at)? as usize;
+                let source = int(3).map_err(at)?;
+                let layer = Layer {
+                    source,
+                    center: [flt(4).map_err(at)?, flt(5).map_err(at)?],
+                    size: [flt(6).map_err(at)?, flt(7).map_err(at)?],
+                    angle: 0.0,
+                };
+                let node = nodes
+                    .iter_mut()
+                    .find(|s| s.uid == uid)
+                    .ok_or_else(|| at(format!("layer for unknown node {uid}")))?;
+                if idx != node.layers.len() {
+                    return Err(at(format!("layer {idx} out of order for node {uid}")));
+                }
+                node.layers.push(layer);
+            }
+            "layer_angle" => {
+                let uid = int(1).map_err(at)?;
+                let idx = int(2).map_err(at)? as usize;
+                let angle = flt(3).map_err(at)?;
+                let node = nodes
+                    .iter_mut()
+                    .find(|s| s.uid == uid)
+                    .ok_or_else(|| at(format!("layer_angle for unknown node {uid}")))?;
+                let layer = node
+                    .layers
+                    .get_mut(idx)
+                    .ok_or_else(|| at(format!("layer_angle for missing layer {idx} of node {uid}")))?;
+                layer.angle = angle;
+            }
             other => return Err(at(format!("unknown record {other:?}"))),
         }
     }
@@ -198,6 +242,7 @@ pub fn load(text: &str, registry: Registry) -> Result<Document, String> {
         doc.insert_snapshot(s).ok_or_else(|| format!("could not create node {}", s.uid))?;
     }
     doc.load_links(&links).map_err(|e| format!("links rejected: {e:?}"))?;
+    doc.sync_all_layers();
     doc.take_changes();
     doc.take_layout_dirty();
     // everything needs a layout pass in the editor after loading

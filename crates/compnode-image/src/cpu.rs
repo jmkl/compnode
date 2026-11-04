@@ -176,6 +176,82 @@ pub fn blend(base: &ImageBuf, layer: &ImageBuf, mode: BlendMode, opacity: f32, m
     out
 }
 
+/// One layer to composite: its source image and how it sits on the canvas.
+pub struct LayerPaint<'a> {
+    pub image: &'a ImageBuf,
+    /// Center on the canvas in pixels; `None` centers the fitted image.
+    pub center: Option<[f32; 2]>,
+    /// Size on the canvas in pixels; `None`/zero fits the image to the canvas.
+    pub size: Option<[f32; 2]>,
+    /// Rotation in degrees.
+    pub angle: f32,
+}
+
+/// Composite `layers` bottom-to-top (source-over) onto a `canvas_w x canvas_h`
+/// transparent image. Each layer is bilinearly sampled with its transform;
+/// layers with no explicit transform are aspect-fitted and centered. This is
+/// what the Output node uses to build its canvas from its input layers.
+pub fn composite_layers(layers: &[LayerPaint], canvas_w: u32, canvas_h: u32) -> ImageBuf {
+    let (cw, ch) = (canvas_w.max(1), canvas_h.max(1));
+    let mut out = ImageBuf::new(cw, ch);
+    for layer in layers {
+        let src = layer.image;
+        if src.width == 0 || src.height == 0 {
+            continue;
+        }
+        let (sw, sh) = (src.width as f32, src.height as f32);
+        // Fit into the canvas when no explicit size is given.
+        let (dw, dh) = match layer.size {
+            Some([w, h]) if w > 0.0 && h > 0.0 => (w, h),
+            _ => {
+                let factor = (cw as f32 / sw).min(ch as f32 / sh);
+                ((sw * factor).max(1.0), (sh * factor).max(1.0))
+            }
+        };
+        let [cx, cy] = layer.center.unwrap_or([cw as f32 * 0.5, ch as f32 * 0.5]);
+        let (cos, sin) = layer.angle.to_radians().sin_cos();
+        let inv_sw = sw / dw;
+        let inv_sh = sh / dh;
+        for y in 0..ch {
+            for x in 0..cw {
+                let px = x as f32 + 0.5 - cx;
+                let py = y as f32 + 0.5 - cy;
+                // Inverse rotation maps the destination pixel into layer space.
+                let lx = px * cos + py * sin;
+                let ly = -px * sin + py * cos;
+                let sx = (lx + dw * 0.5) * inv_sw;
+                let sy = (ly + dh * 0.5) * inv_sh;
+                if sx < 0.0 || sy < 0.0 || sx >= sw || sy >= sh {
+                    continue;
+                }
+                let cs = src.sample(sx, sy, false);
+                if cs[3] <= 0.0 {
+                    continue;
+                }
+                let cb = out.get(x, y);
+                let a_s = cs[3];
+                let a_b = cb[3];
+                let a_o = a_s + a_b * (1.0 - a_s);
+                if a_o <= 0.0 {
+                    continue;
+                }
+                // Straight-alpha source-over.
+                let s = if a_s > 0.0 { [cs[0] / a_s, cs[1] / a_s, cs[2] / a_s] } else { [0.0; 3] };
+                let b = if a_b > 0.0 { [cb[0] / a_b, cb[1] / a_b, cb[2] / a_b] } else { [0.0; 3] };
+                let inv = 1.0 / a_o;
+                let o = [
+                    (s[0] * a_s + b[0] * a_b * (1.0 - a_s)) * inv,
+                    (s[1] * a_s + b[1] * a_b * (1.0 - a_s)) * inv,
+                    (s[2] * a_s + b[2] * a_b * (1.0 - a_s)) * inv,
+                    a_o,
+                ];
+                out.set(x, y, o);
+            }
+        }
+    }
+    out
+}
+
 /// Levels: map `[in_black, in_white]` to `[0, 1]`, apply `gamma`, then map
 /// to `[out_black, out_white]`.
 pub fn levels(img: &ImageBuf, in_black: f32, in_white: f32, gamma: f32, out_black: f32, out_white: f32) -> ImageBuf {

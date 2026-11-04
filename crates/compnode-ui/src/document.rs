@@ -7,6 +7,26 @@ use compnode::geom::vec2;
 use compnode::hash::FxMap;
 use compnode::{ConnectError, Graph, InPin, NodeId, OutPin, Vec2, WireId};
 
+/// One layer of a multi-input canvas node (the Output node and friends): a
+/// source node plus how it is placed on the canvas.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layer {
+    /// uid of the node feeding this layer.
+    pub source: u64,
+    /// Center on the canvas, in canvas pixels (0,0 = top-left corner).
+    pub center: [f32; 2],
+    /// Size on the canvas in canvas pixels; `0,0` means "fit the source".
+    pub size: [f32; 2],
+    /// Rotation in degrees.
+    pub angle: f32,
+}
+
+impl Layer {
+    pub fn new(source: u64) -> Layer {
+        Layer { source, center: [0.0, 0.0], size: [0.0, 0.0], angle: 0.0 }
+    }
+}
+
 /// Data stored on every graph node.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeData {
@@ -21,6 +41,10 @@ pub struct NodeData {
     pub title: Option<String>,
     /// Content height of a frame node (ignored by other nodes).
     pub frame_h: f32,
+    /// Per-layer transforms for a multi-input canvas node, keyed by source
+    /// node uid. The stacking order is the order of this list (bottom first).
+    /// Wires that are connected but have no entry use identity transforms.
+    pub layers: Vec<Layer>,
 }
 
 impl NodeData {
@@ -51,6 +75,7 @@ pub struct NodeSnapshot {
     pub muted: bool,
     pub collapsed: bool,
     pub title: Option<String>,
+    pub layers: Vec<Layer>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -167,6 +192,7 @@ impl Document {
             muted: false,
             collapsed: false,
             title: None,
+            layers: Vec::new(),
         };
         let uid = self.alloc_uid();
         Some(NodeSnapshot { uid, ..snap })
@@ -211,6 +237,7 @@ impl Document {
             collapsed: s.collapsed,
             title: s.title.clone(),
             frame_h: s.frame_h,
+            layers: s.layers.clone(),
         };
         let id = self.graph.add_node(data, s.pos, s.width, ni, no);
         self.uid_map.insert(s.uid, id);
@@ -235,6 +262,7 @@ impl Document {
             muted: n.data.muted,
             collapsed: n.data.collapsed,
             title: n.data.title.clone(),
+            layers: n.data.layers.clone(),
         })
     }
 
@@ -464,6 +492,95 @@ impl Document {
     pub fn size(&self, uid: u64) -> Option<(f32, f32)> {
         let n = self.graph.node(self.id_of(uid)?)?;
         Some((n.width(), n.data.frame_h))
+    }
+
+    /// The layers of a multi-input canvas node (bottom-to-top).
+    pub fn layers(&self, uid: u64) -> &[Layer] {
+        self.data(uid).map_or(&[], |d| d.layers.as_slice())
+    }
+
+    /// The layers of `uid`, reconciled with its multi-input wires: one layer
+    /// per connected source, preserving the existing order and transforms for
+    /// sources that are still connected, appending new ones on top. Removed
+    /// sources are dropped. `input` is the multi-input socket index.
+    ///
+    /// Returns `true` if the layer set changed (a caller can then invalidate).
+    pub fn sync_layers(&mut self, uid: u64, input: usize) -> bool {
+        let sources: Vec<u64> = self.input_links(uid, input).into_iter().map(|l| l.from.0).collect();
+        let Some(d) = self.id_of(uid).and_then(|id| self.graph.node_data_mut(id)) else {
+            return false;
+        };
+        // Keep existing layers (in order) whose source is still connected, and
+        // drop duplicates so a source appears once.
+        let mut seen: Vec<u64> = Vec::new();
+        let mut kept: Vec<Layer> = Vec::new();
+        for l in &d.layers {
+            if sources.contains(&l.source) && !seen.contains(&l.source) {
+                seen.push(l.source);
+                kept.push(*l);
+            }
+        }
+        // Append any newly connected source on top.
+        let mut added = false;
+        for s in &sources {
+            if !seen.contains(s) {
+                seen.push(*s);
+                kept.push(Layer::new(*s));
+                added = true;
+            }
+        }
+        let changed = added || kept.len() != d.layers.len();
+        if changed {
+            d.layers = kept;
+        }
+        changed
+    }
+
+    /// Replace the layer list of `uid` (used by reorder / transform edits).
+    pub fn set_layers(&mut self, uid: u64, layers: Vec<Layer>) -> bool {
+        let Some(d) = self.id_of(uid).and_then(|id| self.graph.node_data_mut(id)) else {
+            return false;
+        };
+        if d.layers == layers {
+            return false;
+        }
+        d.layers = layers;
+        self.changes.push(Change::Flag { uid });
+        self.touch();
+        true
+    }
+
+    /// Update one layer's transform (by source uid); returns `false` if the
+    /// layer does not exist.
+    pub fn set_layer_transform(&mut self, uid: u64, source: u64, f: impl FnOnce(&mut Layer)) -> bool {
+        let Some(d) = self.id_of(uid).and_then(|id| self.graph.node_data_mut(id)) else {
+            return false;
+        };
+        let Some(l) = d.layers.iter_mut().find(|l| l.source == source) else {
+            return false;
+        };
+        f(l);
+        self.changes.push(Change::Flag { uid });
+        self.touch();
+        true
+    }
+
+    /// Reconcile the layers of every multi-input node with its wires. Call
+    /// after structural changes (connect / disconnect / load).
+    pub fn sync_all_layers(&mut self) {
+        let targets: Vec<(u64, usize)> = self
+            .uids()
+            .into_iter()
+            .filter_map(|u| {
+                let s = self.schema_of(u)?;
+                s.inputs.iter().position(|d| d.multi).map(|i| (u, i))
+            })
+            .collect();
+        for (uid, input) in targets {
+            if self.sync_layers(uid, input) {
+                self.changes.push(Change::Structure { uids: vec![uid] });
+            }
+        }
     }
 
     /// Bounding box of nodes, if any exist.

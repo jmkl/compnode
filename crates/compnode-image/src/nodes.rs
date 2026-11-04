@@ -209,10 +209,22 @@ pub fn builtin_ops() -> Vec<Box<dyn NodeOp>> {
     );
     add(
         NodeSchema::new("image.output", "Output", Category::Output)
-            .input(image_in())
+            .input(image_in().multi())
             .output(image_out())
             .footer(SocketDef::image("Preview").widget(WidgetKind::ImagePreview)),
-        |ctx| Ok(vec![Data::Image(ctx.image_or_transparent(0))]),
+        |ctx| {
+            let images = ctx.images(0);
+            eprintln!("DBG output images={} layers={}", images.len(), ctx.layers().len());
+            if images.is_empty() {
+                return Ok(vec![Data::Image(ctx.image_or_transparent(0))]);
+            }
+            // One layer per connected image, bottom-to-top in wire order.
+            // Transforms are looked up per layer index (0..n).
+            let paints: Vec<cpu::LayerPaint> =
+                images.iter().enumerate().map(|(i, img)| ctx.layer_paint(i, img)).collect();
+            let (cw, ch) = ctx.canvas;
+            Ok(vec![Data::Image(Arc::new(cpu::composite_layers(&paints, cw, ch)))])
+        },
     );
     add(
         NodeSchema::new("util.float", "Float", Category::Utility)

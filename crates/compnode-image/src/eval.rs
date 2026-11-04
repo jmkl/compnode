@@ -6,7 +6,7 @@ use crate::loader::{ImageLoader, PpmLoader};
 use crate::nodes::NodeOp;
 use compnode::Color;
 use compnode::hash::FxMap;
-use compnode_ui::document::{Change, Document};
+use compnode_ui::document::{Change, Document, Layer};
 use compnode_ui::schema::Registry;
 use compnode_ui::value::{SocketType, Value};
 use std::sync::Arc;
@@ -55,6 +55,12 @@ impl std::error::Error for EvalError {}
 pub struct EvalCtx<'a> {
     pub canvas: (u32, u32),
     inputs: Vec<Option<Data>>,
+    /// Every value on each input (in connection order); used by multi-input
+    /// sockets such as the Output node's layer list. `multi[i]` is ordered
+    /// bottom-to-top.
+    multi: Vec<Vec<Data>>,
+    /// Layer transforms of the node being evaluated (may be empty).
+    layers: &'a [Layer],
     values: &'a [Value],
     files: &'a mut FxMap<String, Arc<ImageBuf>>,
     loader: &'a dyn ImageLoader,
@@ -63,6 +69,7 @@ pub struct EvalCtx<'a> {
 impl<'a> EvalCtx<'a> {
     /// Build a context (used by other evaluators that reuse the parameter
     /// accessors, such as the GPU one).
+    #[cfg(feature = "gpu")]
     pub(crate) fn new(
         canvas: (u32, u32),
         inputs: Vec<Option<Data>>,
@@ -70,7 +77,22 @@ impl<'a> EvalCtx<'a> {
         files: &'a mut FxMap<String, Arc<ImageBuf>>,
         loader: &'a dyn ImageLoader,
     ) -> EvalCtx<'a> {
-        EvalCtx { canvas, inputs, values, files, loader }
+        let multi = inputs.iter().map(|i| i.iter().cloned().collect()).collect();
+        EvalCtx { canvas, inputs, multi, layers: &[], values, files, loader }
+    }
+
+    /// Build a context that also carries the multi-input values and layer
+    /// transforms (used by the CPU evaluator).
+    pub(crate) fn with_multi(
+        canvas: (u32, u32),
+        inputs: Vec<Option<Data>>,
+        multi: Vec<Vec<Data>>,
+        layers: &'a [Layer],
+        values: &'a [Value],
+        files: &'a mut FxMap<String, Arc<ImageBuf>>,
+        loader: &'a dyn ImageLoader,
+    ) -> EvalCtx<'a> {
+        EvalCtx { canvas, inputs, multi, layers, values, files, loader }
     }
 }
 
@@ -81,6 +103,42 @@ impl EvalCtx<'_> {
             Some(Data::Image(img)) => Some(Arc::clone(img)),
             _ => None,
         }
+    }
+
+    /// Every image connected to input `i`, in connection order (bottom-to-top).
+    pub fn images(&self, i: usize) -> Vec<Arc<ImageBuf>> {
+        self.multi
+            .get(i)
+            .map(|v| {
+                v.iter().filter_map(|d| if let Data::Image(img) = d { Some(Arc::clone(img)) } else { None }).collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Layer transforms of the node being evaluated.
+    pub fn layers(&self) -> &[Layer] {
+        self.layers
+    }
+
+    /// The transform stored for the layer fed by node uid `source` (identity
+    /// when none is stored).
+    pub fn layer_of(&self, source: u64) -> Layer {
+        self.layers.iter().copied().find(|l| l.source == source).unwrap_or(Layer::new(source))
+    }
+
+    /// Build a [`crate::cpu::LayerPaint`] for layer `i` (the i-th connected
+    /// image on the multi-input socket), using the stored transform if present.
+    pub fn layer_paint<'b>(&self, i: usize, image: &'b ImageBuf) -> crate::cpu::LayerPaint<'b> {
+        let l = self.layers.get(i);
+        let (center, size, angle) = match l {
+            Some(l) => (
+                (l.center != [0.0, 0.0]).then_some(l.center),
+                (l.size[0] > 0.0 && l.size[1] > 0.0).then_some(l.size),
+                l.angle,
+            ),
+            None => (None, None, 0.0),
+        };
+        crate::cpu::LayerPaint { image, center, size, angle }
     }
 
     /// The connected image, or a transparent canvas-sized one.
@@ -303,9 +361,16 @@ impl Evaluator {
 
     fn sources(doc: &Document, uid: u64) -> Vec<u64> {
         let Some(node) = doc.id_of(uid).and_then(|id| doc.graph.node(id)) else { return Vec::new() };
-        (0..node.inputs())
-            .filter_map(|i| node.input_wire(i).and_then(|w| doc.link_of_wire(w)).map(|l| l.from.0))
-            .collect()
+        // Use input_wires to support multi-input sockets (multiple wires per input).
+        let mut sources = Vec::new();
+        for i in 0..node.inputs() {
+            for &w in node.input_wires(i) {
+                if let Some(l) = doc.link_of_wire(w) {
+                    sources.push(l.from.0);
+                }
+            }
+        }
+        sources
     }
 
     /// Evaluate `uid` (recomputing only dirty or missing ancestors) and
@@ -361,20 +426,38 @@ impl Evaluator {
         let Some(node) = doc.id_of(uid).and_then(|id| doc.graph.node(id)) else { return };
         let Some(schema) = doc.registry.get(&node.data.schema) else { return };
         let mut inputs: Vec<Option<Data>> = Vec::with_capacity(node.inputs());
+        let mut multi: Vec<Vec<Data>> = Vec::with_capacity(node.inputs());
         for i in 0..node.inputs() {
-            let Some(link) = node.input_wire(i).and_then(|w| doc.link_of_wire(w)) else {
+            let links: Vec<compnode_ui::document::Link> =
+                node.input_wires(i).iter().filter_map(|&w| doc.link_of_wire(w)).collect();
+            if links.is_empty() {
                 inputs.push(None);
+                multi.push(Vec::new());
                 continue;
-            };
-            if self.errors.contains_key(&link.from.0) {
-                self.cache.remove(&uid);
-                self.errors.insert(
-                    uid,
-                    format!("input {} failed upstream", schema.inputs.get(i).map_or("?", |d| d.name.as_str())),
-                );
-                return;
             }
-            inputs.push(self.cache.get(&link.from.0).and_then(|v| v.get(link.from.1)).cloned());
+            let mut values: Vec<Data> = Vec::with_capacity(links.len());
+            for link in &links {
+                eprintln!(
+                    "DBG eval link.from=({}, {}) cache_has={} cache_val={:?}",
+                    link.from.0,
+                    link.from.1,
+                    self.cache.contains_key(&link.from.0),
+                    self.cache.get(&link.from.0).and_then(|v| v.get(link.from.1))
+                );
+                if self.errors.contains_key(&link.from.0) {
+                    self.cache.remove(&uid);
+                    self.errors.insert(
+                        uid,
+                        format!("input {} failed upstream", schema.inputs.get(i).map_or("?", |d| d.name.as_str())),
+                    );
+                    return;
+                }
+                if let Some(d) = self.cache.get(&link.from.0).and_then(|v| v.get(link.from.1)).cloned() {
+                    values.push(d);
+                }
+            }
+            inputs.push(values.first().cloned());
+            multi.push(values);
         }
         if node.data.muted {
             let pass = schema
@@ -400,10 +483,13 @@ impl Evaluator {
             // flows into it. Pair the inputs and outputs positionally, so a
             // rerouted image (or value) reaches the same downstream socket.
             if node.data.is_reroute() {
+                // Forward everything on input 0 to output 0 (a reroute can
+                // carry a multi-input's whole list downstream), and copy any
+                // other sockets positionally.
                 let mut out: Vec<Data> = Vec::with_capacity(schema.outputs.len());
                 for i in 0..schema.outputs.len() {
-                    match inputs.get(i).cloned().flatten() {
-                        Some(d) => out.push(d),
+                    match multi.get(i).filter(|v| !v.is_empty()) {
+                        Some(vals) => out.extend(vals.iter().cloned()),
                         None => {
                             let def = &schema.outputs[i].default;
                             out.push(if def.socket_type() == SocketType::Image {
@@ -422,13 +508,15 @@ impl Evaluator {
             self.errors.insert(uid, format!("no implementation for {}", node.data.schema));
             return;
         };
-        let mut ctx = EvalCtx {
-            canvas: self.canvas,
+        let mut ctx = EvalCtx::with_multi(
+            self.canvas,
             inputs,
-            values: &node.data.values,
-            files: &mut self.files,
-            loader: &*self.loader,
-        };
+            multi,
+            &node.data.layers,
+            &node.data.values,
+            &mut self.files,
+            &*self.loader,
+        );
         let result = op.eval(&mut ctx);
         match result {
             Ok(out) => {
@@ -488,6 +576,7 @@ mod tests {
         d.connect(Link { from: (a, ai), to: (b, bi) }).unwrap();
     }
     fn sync(d: &mut Document, e: &mut Evaluator) {
+        d.sync_all_layers();
         let ch = d.take_changes();
         e.apply_changes(d, &ch);
     }
@@ -630,6 +719,52 @@ mod tests {
     }
 
     #[test]
+    fn output_stacks_multiple_layers_top_to_bottom() {
+        let (mut d, mut e) = setup();
+        // Two full-canvas solids wired into the Output node. The last wire is
+        // the top layer and wins where they overlap.
+        let bottom = add(&mut d, "image.solid");
+        d.set_value(bottom, 0, Value::Color(Color::rgb(1.0, 0.0, 0.0)));
+        let top = add(&mut d, "image.solid");
+        d.set_value(top, 0, Value::Color(Color::rgb(0.0, 0.0, 1.0)));
+        let out = add(&mut d, "image.output");
+        link(&mut d, bottom, 0, out, 0);
+        link(&mut d, top, 0, out, 0);
+        sync(&mut d, &mut e);
+        // Both wires must land on the same (multi) input and stack in order.
+        let img = e.evaluate(&d, out).unwrap();
+        let c = center(&img);
+        assert!(near(c[2], 1.0) && near(c[0], 0.0), "top layer wins: {c:?}");
+        // The document keeps one layer per source, bottom-to-top.
+        let layers = d.layers(out);
+        assert_eq!(layers.len(), 2);
+        assert_eq!(layers[0].source, bottom);
+        assert_eq!(layers[1].source, top);
+    }
+
+    #[test]
+    fn output_layer_transform_moves_the_layer() {
+        let (mut d, mut e) = setup();
+        let n = N as f32;
+        let a = add(&mut d, "image.solid");
+        d.set_value(a, 0, Value::Color(Color::rgb(1.0, 1.0, 1.0)));
+        let out = add(&mut d, "image.output");
+        link(&mut d, a, 0, out, 0);
+        sync(&mut d, &mut e);
+        // No transform: the fitted layer fills the canvas.
+        assert!(near(center(&e.evaluate(&d, out).unwrap())[3], 1.0));
+        // Shrink and push the layer to the top-left corner.
+        d.set_layer_transform(out, a, |l| {
+            l.center = [n * 0.25, n * 0.25];
+            l.size = [n * 0.4, n * 0.4];
+        });
+        sync(&mut d, &mut e);
+        let img = e.evaluate(&d, out).unwrap();
+        assert!(img.get(1, 1)[3] > 0.5, "layer covers the top-left corner");
+        assert!(img.get((n - 1.0) as u32, (n - 1.0) as u32)[3] < 0.5, "far corner is empty");
+    }
+
+    #[test]
     fn missing_inputs_are_transparent_and_errors_propagate() {
         let (mut d, mut e) = setup();
         let blur = add(&mut d, "image.blur");
@@ -678,8 +813,10 @@ mod tests {
         d.set_value(f, 0, Value::String("mem://big".into()));
         sync(&mut d, &mut ev);
         let img = ev.evaluate(&d, out).unwrap();
-        assert_eq!((img.width, img.height), (8, 4)); // downscaled to fit the 8x8 canvas
-        assert!(near(img.get(3, 2)[0], 1.0));
+        // The Output node is a canvas: the source is aspect-fit onto the 8x8
+        // canvas and centered, so the result is canvas-sized, not source-sized.
+        assert_eq!((img.width, img.height), (8, 8));
+        assert!(img.get(3, 2)[3] > 0.5, "fitted layer covers the canvas center");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         // touching an unrelated parameter does not reload
         let other = add(&mut d, "image.blur");

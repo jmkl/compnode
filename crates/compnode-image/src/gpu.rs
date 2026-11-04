@@ -972,31 +972,44 @@ impl GpuEvaluator {
         let Some(schema) = doc.registry.get(&node.data.schema) else { return };
         let mut imgs: Vec<Option<Arc<GpuImage>>> = Vec::with_capacity(node.inputs());
         let mut vals: Vec<Option<Data>> = Vec::with_capacity(node.inputs());
+        // Every image on each input, in connection order (multi-input sockets).
+        let mut multi_imgs: Vec<Vec<Arc<GpuImage>>> = Vec::with_capacity(node.inputs());
         for i in 0..node.inputs() {
-            let Some(link) = node.input_wire(i).and_then(|w| doc.link_of_wire(w)) else {
+            let links: Vec<compnode_ui::document::Link> =
+                node.input_wires(i).iter().filter_map(|&w| doc.link_of_wire(w)).collect();
+            if links.is_empty() {
                 imgs.push(None);
                 vals.push(None);
+                multi_imgs.push(Vec::new());
                 continue;
-            };
-            if self.errors.contains_key(&link.from.0) {
-                self.drop_outputs(uid);
-                self.errors.insert(uid, "input failed upstream".to_string());
-                return;
             }
-            match self.cache.get(&link.from.0).and_then(|v| v.get(link.from.1)).cloned() {
-                Some(GData::Image(img)) => {
-                    imgs.push(Some(img));
-                    vals.push(None);
+            let mut all: Vec<Arc<GpuImage>> = Vec::with_capacity(links.len());
+            let mut first: Option<Arc<GpuImage>> = None;
+            let mut first_val: Option<Data> = None;
+            for link in &links {
+                if self.errors.contains_key(&link.from.0) {
+                    self.drop_outputs(uid);
+                    self.errors.insert(uid, "input failed upstream".to_string());
+                    return;
                 }
-                Some(GData::Val(v)) => {
-                    imgs.push(None);
-                    vals.push(Some(Data::Val(v)));
-                }
-                None => {
-                    imgs.push(None);
-                    vals.push(None);
+                match self.cache.get(&link.from.0).and_then(|v| v.get(link.from.1)).cloned() {
+                    Some(GData::Image(img)) => {
+                        if first.is_none() {
+                            first = Some(Arc::clone(&img));
+                        }
+                        all.push(img);
+                    }
+                    Some(GData::Val(v)) => {
+                        if first_val.is_none() {
+                            first_val = Some(Data::Val(v));
+                        }
+                    }
+                    None => {}
                 }
             }
+            imgs.push(first);
+            vals.push(first_val);
+            multi_imgs.push(all);
         }
         let kind = node.data.schema.clone();
         let muted = node.data.muted;
@@ -1013,7 +1026,7 @@ impl GpuEvaluator {
                 None => Ok(Vec::new()),
             }
         } else {
-            self.run_node(&kind, &imgs, vals, &values)
+            self.run_node(&kind, &imgs, &multi_imgs, &node.data.layers, vals, &values)
         };
         self.drop_outputs(uid);
         match result {
@@ -1047,6 +1060,8 @@ impl GpuEvaluator {
         &mut self,
         kind: &str,
         imgs: &[Option<Arc<GpuImage>>],
+        multi_imgs: &[Vec<Arc<GpuImage>>],
+        layers: &[compnode_ui::document::Layer],
         vals: Vec<Option<Data>>,
         values: &[Value],
     ) -> Result<Vec<GData>, String> {
@@ -1194,7 +1209,37 @@ impl GpuEvaluator {
                 let out = self.ctx.pass("rotate", ROTATE, WORK_FORMAT, &[&*src], params(&prm), (src.width, src.height));
                 Ok(vec![GData::Image(Arc::new(out))])
             }
-            "image.output" => Ok(vec![GData::Image(self.img_or_transparent(imgs.first().and_then(|o| o.as_ref())))]),
+            "image.output" => {
+                // The Output node is a layer canvas: composite every connected
+                // input layer (bottom-to-top) with its transform. The GPU
+                // compositor only handles axis-aligned source-over at full
+                // resolution, so download the layers and composite on the CPU,
+                // then upload the result. This node is terminal, so the cost is
+                // acceptable and keeps the transform math identical to the CPU
+                // reference.
+                let input_layers = multi_imgs.first().map(Vec::as_slice).unwrap_or(&[]);
+                if input_layers.is_empty() {
+                    return Ok(vec![GData::Image(self.img_or_transparent(None))]);
+                }
+                let mut cpu_layers: Vec<(compnode_ui::document::Layer, ImageBuf)> = Vec::new();
+                for (i, img) in input_layers.iter().enumerate() {
+                    let buf = self.ctx.download(img)?;
+                    let layer = layers.get(i).copied().unwrap_or(compnode_ui::document::Layer::new(0));
+                    cpu_layers.push((layer, buf));
+                }
+                let paints: Vec<crate::cpu::LayerPaint> = cpu_layers
+                    .iter()
+                    .map(|(l, buf)| crate::cpu::LayerPaint {
+                        image: buf,
+                        center: (l.center != [0.0, 0.0]).then_some(l.center),
+                        size: (l.size[0] > 0.0 && l.size[1] > 0.0).then_some(l.size),
+                        angle: l.angle,
+                    })
+                    .collect();
+                let (cw, ch) = canvas;
+                let composited = crate::cpu::composite_layers(&paints, cw, ch);
+                Ok(vec![GData::Image(Arc::new(self.ctx.upload(&composited)))])
+            }
             "util.float" => Ok(vec![GData::Val(Value::Float(f(0)))]),
             "util.color" => Ok(vec![GData::Val(Value::Color(p.color(0)))]),
             // Reroute forwards whatever flows into it, image or value, so a
