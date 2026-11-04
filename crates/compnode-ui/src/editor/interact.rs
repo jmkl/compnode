@@ -195,7 +195,8 @@ impl Editor {
                 replacing: None,
             });
         }
-        match self.doc.input_link(uid, idx) {
+        // On a multi-input socket, pick up the most recently connected wire.
+        match self.doc.input_links(uid, idx).last().copied() {
             Some(link) => Interaction::DragWire(WireDrag {
                 start: WireStart::Out(link.from.0, link.from.1),
                 cursor: gp,

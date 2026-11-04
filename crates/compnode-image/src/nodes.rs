@@ -208,7 +208,7 @@ pub fn builtin_ops() -> Vec<Box<dyn NodeOp>> {
         |ctx| img(cpu::rotate(&ctx.image_or_transparent(0), ctx.float(1))),
     );
     add(
-        NodeSchema::new("image.output", "Output", Category::Output)
+        NodeSchema::new("image.output", "Output Node", Category::Output)
             .input(image_in().multi())
             .output(image_out())
             .footer(SocketDef::image("Preview").widget(WidgetKind::ImagePreview)),

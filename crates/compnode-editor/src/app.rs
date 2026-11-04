@@ -229,7 +229,7 @@ impl App {
         let use_gpu = wgpu_state.is_some();
         #[cfg(not(feature = "gpu"))]
         let use_gpu = false;
-        let canvas_px = args.canvas.unwrap_or(if use_gpu { 2048 } else { 512 });
+        let canvas_px = args.canvas.unwrap_or(if use_gpu { 1024 } else { 512 });
 
         #[cfg(feature = "gpu")]
         if args.selftest_gpu {

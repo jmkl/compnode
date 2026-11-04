@@ -738,14 +738,25 @@ impl Editor {
     /// Link `link`, removing what it replaces (and `replacing`, a link that
     /// was dragged off its input).
     pub(crate) fn apply_link(&mut self, link: Link, replacing: Option<Link>) {
-        if replacing == Some(link) || self.doc.input_link(link.to.0, link.to.1) == Some(link) {
+        let multi = self.doc.is_multi_input(link.to.0, link.to.1);
+        if replacing == Some(link) {
+            return;
+        }
+        // A multi-input socket keeps its other wires (it only refuses an exact
+        // duplicate); a single-input socket drops whatever fed it.
+        if multi {
+            if self.doc.input_links(link.to.0, link.to.1).contains(&link) {
+                return;
+            }
+        } else if self.doc.input_link(link.to.0, link.to.1) == Some(link) {
             return;
         }
         let mut remove: Vec<Link> = Vec::new();
         if let Some(r) = replacing {
             remove.push(r);
         }
-        if let Some(e) = self.doc.input_link(link.to.0, link.to.1)
+        if !multi
+            && let Some(e) = self.doc.input_link(link.to.0, link.to.1)
             && !remove.contains(&e)
         {
             remove.push(e);
@@ -1025,6 +1036,17 @@ mod tests {
         e.undo();
         assert_eq!(e.doc.node_count(), 2);
         assert!(e.doc.contains(d[0]));
+    }
+
+    #[test]
+    fn multi_input_accepts_several_wires() {
+        let mut e = editor();
+        let a = e.add_node("t.src", vec2(0.0, 0.0)).unwrap();
+        let b = e.add_node("t.src", vec2(0.0, 200.0)).unwrap();
+        let m = e.add_node("t.multi", vec2(600.0, 0.0)).unwrap();
+        assert_eq!(e.connect((a, 0), (m, 0)), Feedback::Ok);
+        assert_eq!(e.connect((b, 0), (m, 0)), Feedback::Ok);
+        assert_eq!(e.doc.input_links(m, 0).len(), 2);
     }
 
     #[test]

@@ -1,0 +1,70 @@
+--- a/crates/compnode-ui/src/editor.rs	2026-11-04 11:18:12.000000000 +0700
++++ b/crates/compnode-ui/src/editor.rs	2026-11-04 20:14:19.988787268 +0700
+@@ -738,14 +738,25 @@
+     /// Link `link`, removing what it replaces (and `replacing`, a link that
+     /// was dragged off its input).
+     pub(crate) fn apply_link(&mut self, link: Link, replacing: Option<Link>) {
+-        if replacing == Some(link) || self.doc.input_link(link.to.0, link.to.1) == Some(link) {
++        let multi = self.doc.is_multi_input(link.to.0, link.to.1);
++        if replacing == Some(link) {
++            return;
++        }
++        // A multi-input socket keeps its other wires (it only refuses an exact
++        // duplicate); a single-input socket drops whatever fed it.
++        if multi {
++            if self.doc.input_links(link.to.0, link.to.1).contains(&link) {
++                return;
++            }
++        } else if self.doc.input_link(link.to.0, link.to.1) == Some(link) {
+             return;
+         }
+         let mut remove: Vec<Link> = Vec::new();
+         if let Some(r) = replacing {
+             remove.push(r);
+         }
+-        if let Some(e) = self.doc.input_link(link.to.0, link.to.1)
++        if !multi
++            && let Some(e) = self.doc.input_link(link.to.0, link.to.1)
+             && !remove.contains(&e)
+         {
+             remove.push(e);
+@@ -1028,6 +1039,17 @@
+     }
+ 
+     #[test]
++    fn multi_input_accepts_several_wires() {
++        let mut e = editor();
++        let a = e.add_node("t.src", vec2(0.0, 0.0)).unwrap();
++        let b = e.add_node("t.src", vec2(0.0, 200.0)).unwrap();
++        let m = e.add_node("t.multi", vec2(600.0, 0.0)).unwrap();
++        assert_eq!(e.connect((a, 0), (m, 0)), Feedback::Ok);
++        assert_eq!(e.connect((b, 0), (m, 0)), Feedback::Ok);
++        assert_eq!(e.doc.input_links(m, 0).len(), 2);
++    }
++
++    #[test]
+     fn menu_add_connects_first_compatible_socket() {
+         let mut e = editor();
+         let a = e.add_node("t.src", vec2(0.0, 0.0)).unwrap();
+--- a/crates/compnode-ui/src/editor/interact.rs	2026-11-04 11:18:12.000000000 +0700
++++ b/crates/compnode-ui/src/editor/interact.rs	2026-11-04 20:14:19.991900963 +0700
+@@ -195,7 +195,8 @@
+                 replacing: None,
+             });
+         }
+-        match self.doc.input_link(uid, idx) {
++        // On a multi-input socket, pick up the most recently connected wire.
++        match self.doc.input_links(uid, idx).last().copied() {
+             Some(link) => Interaction::DragWire(WireDrag {
+                 start: WireStart::Out(link.from.0, link.from.1),
+                 cursor: gp,
+--- a/crates/compnode-ui/src/document.rs	2026-11-04 11:26:10.000000000 +0700
++++ b/crates/compnode-ui/src/document.rs	2026-11-04 20:14:19.994299539 +0700
+@@ -622,6 +622,7 @@
+                 .output(SocketDef::image("Image")),
+         );
+         r.register(NodeSchema::new("t.sink", "Sink", Category::Output).input(SocketDef::image("Image")));
++        r.register(NodeSchema::new("t.multi", "Multi", Category::Output).input(SocketDef::image("Image").multi()));
+         r.register(
+             NodeSchema::new("t.num", "Number", Category::Utility)
+                 .input(SocketDef::float("Value", 0.0))

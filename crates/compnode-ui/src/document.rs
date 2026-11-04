@@ -622,6 +622,7 @@ pub(crate) mod test_support {
                 .output(SocketDef::image("Image")),
         );
         r.register(NodeSchema::new("t.sink", "Sink", Category::Output).input(SocketDef::image("Image")));
+        r.register(NodeSchema::new("t.multi", "Multi", Category::Output).input(SocketDef::image("Image").multi()));
         r.register(
             NodeSchema::new("t.num", "Number", Category::Utility)
                 .input(SocketDef::float("Value", 0.0))

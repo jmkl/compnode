@@ -287,9 +287,14 @@ impl<N> Graph<N> {
     }
 
     /// Insert the wire and index it. Pins must already be validated. Any wire
-    /// already on the input is left in place (single-input replacement is a
-    /// higher-level policy); call [`Graph::disconnect_input`] first to replace.
-    fn insert_wire(&mut self, from: OutPin, to: InPin) -> WireId {
+    /// already on the input is left in place when `replace=false` (the default
+    /// for multi-input sockets); when `replace=true` the existing wire(s) are
+    /// first removed (single-input replacement semantics).
+    fn insert_wire(&mut self, from: OutPin, to: InPin, replace: bool) -> WireId {
+        if replace {
+            // Remove any existing wire(s) on this input before inserting.
+            self.disconnect_input(to.node, to.index);
+        }
         let a = self.nodes.get(from.node).expect("validated").out_pos(from.index);
         let b = self.nodes.get(to.node).expect("validated").in_pos(to.index);
         let bbox = wire_bbox(a, b);
@@ -355,7 +360,7 @@ impl<N> Graph<N> {
         if !self.order_edge(from.node, to.node) {
             return Err(ConnectError::Cycle);
         }
-        Ok(self.insert_wire(from, to))
+        Ok(self.insert_wire(from, to, false))
     }
 
     /// Connect an output to a single-input socket: any wire already on the
@@ -365,8 +370,7 @@ impl<N> Graph<N> {
         if !self.order_edge(from.node, to.node) {
             return Err(ConnectError::Cycle);
         }
-        self.disconnect_input(to.node, to.index);
-        Ok(self.insert_wire(from, to))
+        Ok(self.insert_wire(from, to, true))
     }
 
     /// Recompute the topological order from scratch (Kahn, O(V+E)).
@@ -425,7 +429,7 @@ impl<N> Graph<N> {
         for &(f, t) in edges {
             self.check_pins(f, t)?;
         }
-        let ids: Vec<WireId> = edges.iter().map(|&(f, t)| self.insert_wire(f, t)).collect();
+        let ids: Vec<WireId> = edges.iter().map(|&(f, t)| self.insert_wire(f, t, true)).collect();
         if !self.rebuild_order() {
             for &w in &ids {
                 self.disconnect(w);
