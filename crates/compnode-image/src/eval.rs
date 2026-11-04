@@ -396,6 +396,28 @@ impl Evaluator {
             return;
         }
         let Some(op) = self.ops.get(&node.data.schema) else {
+            // A reroute has no implementation: it just forwards whatever
+            // flows into it. Pair the inputs and outputs positionally, so a
+            // rerouted image (or value) reaches the same downstream socket.
+            if node.data.is_reroute() {
+                let mut out: Vec<Data> = Vec::with_capacity(schema.outputs.len());
+                for i in 0..schema.outputs.len() {
+                    match inputs.get(i).cloned().flatten() {
+                        Some(d) => out.push(d),
+                        None => {
+                            let def = &schema.outputs[i].default;
+                            out.push(if def.socket_type() == SocketType::Image {
+                                Data::Image(Arc::new(ImageBuf::new(self.canvas.0, self.canvas.1)))
+                            } else {
+                                Data::Val(def.clone())
+                            });
+                        }
+                    }
+                }
+                self.errors.remove(&uid);
+                self.cache.insert(uid, out);
+                return;
+            }
             self.cache.remove(&uid);
             self.errors.insert(uid, format!("no implementation for {}", node.data.schema));
             return;
@@ -571,6 +593,40 @@ mod tests {
         d.set_muted(inv, false);
         sync(&mut d, &mut e);
         assert!(near(center(&e.evaluate(&d, out).unwrap())[0], 0.8));
+    }
+
+    #[test]
+    fn reroute_passes_an_image_downstream() {
+        let (mut d, mut e) = setup();
+        let s = add(&mut d, "image.solid");
+        d.set_value(s, 0, Value::Color(Color::rgb(0.2, 0.4, 0.6)));
+        let r = add(&mut d, "core.reroute");
+        let out = add(&mut d, "image.output");
+        link(&mut d, s, 0, r, 0);
+        link(&mut d, r, 0, out, 0);
+        sync(&mut d, &mut e);
+        let img = e.evaluate(&d, out).unwrap();
+        let c = center(&img);
+        assert!(near(c[0], 0.2) && near(c[1], 0.4) && near(c[2], 0.6) && near(c[3], 1.0), "{c:?}");
+        assert!(e.error(r).is_none());
+    }
+
+    #[test]
+    fn reroute_passes_a_parameter_value() {
+        let (mut d, mut e) = setup();
+        let s = add(&mut d, "image.solid");
+        d.set_value(s, 0, Value::Color(Color::rgb(0.2, 0.2, 0.2)));
+        let num = add(&mut d, "util.float");
+        d.set_value(num, 0, Value::Float(0.3));
+        let r = add(&mut d, "core.reroute");
+        let bc = add(&mut d, "image.brightness_contrast");
+        let out = add(&mut d, "image.output");
+        link(&mut d, s, 0, bc, 0);
+        link(&mut d, bc, 0, out, 0);
+        link(&mut d, num, 0, r, 0);
+        link(&mut d, r, 0, bc, 1); // Float -> Brightness through the reroute
+        sync(&mut d, &mut e);
+        assert!(near(center(&e.evaluate(&d, out).unwrap())[0], 0.5));
     }
 
     #[test]

@@ -1054,6 +1054,12 @@ impl GpuEvaluator {
         // parameter access shares the CPU evaluator's rules (connected values win)
         let loader = Arc::clone(&self.loader);
         let mut scratch = std::mem::take(&mut self.scratch_files);
+        // A reroute forwards a value input verbatim (image inputs are handled
+        // separately); grab it before `vals` is moved into the context.
+        let passthrough_val = vals.iter().find_map(|v| match v {
+            Some(Data::Val(val)) => Some(val.clone()),
+            _ => None,
+        });
         let p = EvalCtx::new(canvas, vals, values, &mut scratch, loader.as_ref());
         let f = |i: usize| p.float(i);
         let one = |this: &mut GpuEvaluator, name: &'static str, body: &'static str, prm: &[f32], idx: usize| {
@@ -1191,6 +1197,15 @@ impl GpuEvaluator {
             "image.output" => Ok(vec![GData::Image(self.img_or_transparent(imgs.first().and_then(|o| o.as_ref())))]),
             "util.float" => Ok(vec![GData::Val(Value::Float(f(0)))]),
             "util.color" => Ok(vec![GData::Val(Value::Color(p.color(0)))]),
+            // Reroute forwards whatever flows into it, image or value, so a
+            // parameter can reach a downstream socket through it.
+            "core.reroute" => {
+                if let Some(v) = passthrough_val {
+                    Ok(vec![GData::Val(v)])
+                } else {
+                    Ok(vec![GData::Image(self.img_or_transparent(imgs.first().and_then(|o| o.as_ref())))])
+                }
+            }
             other => Err(format!("no GPU implementation for {other}")),
         };
         drop(p);
