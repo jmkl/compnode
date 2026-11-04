@@ -43,6 +43,17 @@ fn icon_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("icons".into()))
 }
 
+/// The shared look for floating menus (add-node menu, context menu): a rounded
+/// dark panel with a soft drop shadow, matching the graph's theme.
+fn menu_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(Color32::from_rgb(0x25, 0x25, 0x25))
+        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(0x0e, 0x0e, 0x0e)))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::same(6))
+        .shadow(egui::epaint::Shadow { offset: [0, 4], blur: 16, spread: 0, color: Color32::from_black_alpha(140) })
+}
+
 struct ShapeCache {
     key: (DrawKey, u32, u32, u32),
     origin: compnode::Vec2,
@@ -63,6 +74,7 @@ struct MenuUi {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Copy)]
 struct ContextUi {
     screen: egui::Pos2,
     graph_pos: compnode::Vec2,
@@ -250,6 +262,7 @@ impl App {
         }
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         setup_fonts(&cc.egui_ctx);
+        setup_style(&cc.egui_ctx);
         let bench = args.bench.map(|n| Bench { target: 240, samples: Vec::new(), nodes: n });
         let mut app = App {
             ed,
@@ -1118,7 +1131,7 @@ impl App {
         egui::Area::new(egui::Id::new("compnode-text-edit")).fixed_pos(at).order(egui::Order::Foreground).show(
             ctx,
             |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                menu_frame().show(ui, |ui| {
                     let resp = if p.request.multiline {
                         ui.add(egui::TextEdit::multiline(&mut st.buf).desired_width(width).desired_rows(4))
                     } else {
@@ -1171,7 +1184,7 @@ impl App {
             .fixed_pos(m.screen)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                menu_frame().show(ui, |ui| {
                     ui.set_width(240.0);
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut m.query).hint_text("Search nodes").desired_width(f32::INFINITY),
@@ -1214,7 +1227,7 @@ impl App {
             .fixed_pos(screen)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                menu_frame().show(ui, |ui| {
                     ui.set_width(220.0);
                     let has_ctx = uid.is_some_and(|u| self.ed.doc.contains(u));
                     let mut items: Vec<(ContextAction, &'static str, &'static str, &'static str)> = Vec::new();
@@ -1452,6 +1465,51 @@ impl eframe::App for App {
         self.frame_ms.push(ms);
         self.run_bench_step(ctx, ms);
     }
+}
+
+/// A modern flat egui style for the host chrome (panels, buttons, menus) so it
+/// matches the Blender-ish graph look: rounded corners, roomy padding, a warm
+/// orange accent, and no harsh light-gray borders.
+fn setup_style(ctx: &egui::Context) {
+    use egui::{CornerRadius, Stroke};
+
+    let accent = Color32::from_rgb(0xff, 0x8c, 0x1a);
+    let panel = Color32::from_rgb(0x25, 0x25, 0x25);
+    let widget = Color32::from_rgb(0x3a, 0x3a, 0x3a);
+    let hover = Color32::from_rgb(0x45, 0x45, 0x45);
+
+    ctx.all_styles_mut(|style| {
+        let v = &mut style.visuals;
+        v.panel_fill = Color32::from_rgb(0x1b, 0x1b, 0x1b);
+        v.window_fill = panel;
+        v.window_stroke = Stroke::new(1.0, Color32::from_rgb(0x0e, 0x0e, 0x0e));
+        v.menu_corner_radius = CornerRadius::same(6);
+        v.window_corner_radius = CornerRadius::same(6);
+        v.window_shadow =
+            egui::epaint::Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(120) };
+        v.popup_shadow = v.window_shadow;
+        v.selection.bg_fill = accent.gamma_multiply(0.55);
+        v.selection.stroke = Stroke::new(1.0, accent);
+
+        let r = CornerRadius::same(5);
+        let w = &mut v.widgets;
+        for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+            s.corner_radius = r;
+            s.fg_stroke = Stroke::new(1.0, Color32::from_rgb(0xe8, 0xe8, 0xe8));
+            s.bg_stroke = Stroke::new(1.0, Color32::from_rgb(0x24, 0x24, 0x24));
+        }
+        w.noninteractive.bg_fill = panel;
+        w.inactive.bg_fill = widget;
+        w.inactive.weak_bg_fill = widget;
+        w.hovered.bg_fill = hover;
+        w.hovered.weak_bg_fill = hover;
+        w.active.bg_fill = Color32::from_rgb(0x2c, 0x2c, 0x2c);
+        w.active.weak_bg_fill = Color32::from_rgb(0x2c, 0x2c, 0x2c);
+
+        style.spacing.item_spacing = egui::vec2(6.0, 5.0);
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style.spacing.menu_margin = egui::Margin::same(6);
+    });
 }
 
 /// Install the editor's bundled fonts: Inter for UI text and 3270 Nerd Font

@@ -55,6 +55,7 @@ keys! {
         FieldHover => "field_hover",
         FieldPressed => "field_pressed",
         FieldFocus => "field_focus",
+        FieldShadow => "field_shadow",
         FieldText => "field_text",
         SliderFill => "slider_fill",
         Popup => "popup",
@@ -91,6 +92,7 @@ keys! {
         GridMajorEvery => "grid_major_every",
         FieldRadius => "field_radius",
         FieldInset => "field_inset",
+        FieldFocusWidth => "field_focus_width",
         WidgetLabelFrac => "widget_label_frac",
     }
 }
@@ -195,8 +197,9 @@ impl Theme {
         self.nums[Num::WireDimAlpha as usize] = 0.3;
         self.nums[Num::GridStep as usize] = 20.0;
         self.nums[Num::GridMajorEvery as usize] = 5.0;
-        self.nums[Num::FieldRadius as usize] = 4.0;
+        self.nums[Num::FieldRadius as usize] = 5.0;
         self.nums[Num::FieldInset as usize] = 12.0;
+        self.nums[Num::FieldFocusWidth as usize] = 1.5;
         self.nums[Num::WidgetLabelFrac as usize] = 0.35;
     }
 
@@ -231,11 +234,12 @@ impl Theme {
         set(&mut t, Col::WireCut, "#ff4040");
         set(&mut t, Col::WireInvalid, "#d04040");
         set(&mut t, Col::WireInsert, "#4da3ff");
-        set(&mut t, Col::FieldFill, "#3b3b3b");
-        set(&mut t, Col::FieldBorder, "#1a1a1a");
-        set(&mut t, Col::FieldHover, "#474747");
-        set(&mut t, Col::FieldPressed, "#2f2f2f");
+        set(&mut t, Col::FieldFill, "#3a3a3a");
+        set(&mut t, Col::FieldBorder, "#242424");
+        set(&mut t, Col::FieldHover, "#454545");
+        set(&mut t, Col::FieldPressed, "#2c2c2c");
         set(&mut t, Col::FieldFocus, "#ff8c1a");
+        set(&mut t, Col::FieldShadow, "#00000033");
         set(&mut t, Col::FieldText, "#f2f2f2");
         set(&mut t, Col::SliderFill, "#3f6fa8");
         set(&mut t, Col::Popup, "#242424");
@@ -308,6 +312,7 @@ impl Theme {
         set(&mut t, Col::FieldHover, "#c4c4c4");
         set(&mut t, Col::FieldPressed, "#b4b4b4");
         set(&mut t, Col::FieldFocus, "#e07000");
+        set(&mut t, Col::FieldShadow, "#0000001f");
         set(&mut t, Col::FieldText, "#101010");
         set(&mut t, Col::Popup, "#f8f8f8");
         set(&mut t, Col::PopupBorder, "#808080");

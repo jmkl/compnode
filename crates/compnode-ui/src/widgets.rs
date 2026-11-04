@@ -67,11 +67,45 @@ fn field_fill(theme: &Theme, hover: bool, pressed: bool) -> Color {
 fn draw_field(dl: &mut DrawList, rect: Rect, theme: &Theme, hover: bool, pressed: bool, focused: bool) {
     let fill = field_fill(theme, hover, pressed);
     let r = theme.n(Num::FieldRadius);
-    if focused {
-        dl.rect_stroked(Layer::Nodes, rect, r, fill, theme.c(Col::FieldFocus), 1.5);
-    } else {
-        dl.rect_stroked(Layer::Nodes, rect, r, fill, theme.c(Col::FieldBorder), 1.0);
+    // Subtle bottom inner shadow so the field reads as inset.
+    let shade = theme.c(Col::FieldShadow);
+    if shade.a > 0.0 {
+        dl.rect(Layer::Nodes, Rect::new(vec2(rect.min.x, rect.min.y), vec2(rect.max.x, rect.min.y + 1.0)), r, shade);
     }
+    dl.rect(Layer::Nodes, rect, r, fill);
+    if focused {
+        let glow = theme.c(Col::FieldFocus);
+        dl.rect_stroked(Layer::Nodes, rect, r, Color::TRANSPARENT, glow, theme.n(Num::FieldFocusWidth));
+        dl.rect_stroked(
+            Layer::Nodes,
+            rect.expand(1.0),
+            r + 1.0,
+            Color::TRANSPARENT,
+            glow.with_alpha(glow.a * 0.25),
+            1.0,
+        );
+    } else {
+        dl.rect_stroked(Layer::Nodes, rect, r, Color::TRANSPARENT, theme.c(Col::FieldBorder), 1.0);
+    }
+}
+
+/// A soft drop shadow behind a floating panel (popups, menus).
+fn draw_panel(dl: &mut DrawList, rect: Rect, theme: &Theme, radius: f32) {
+    let shadow = theme.c(Col::NodeShadow);
+    if shadow.a > 0.0 {
+        dl.rect(
+            Layer::Popup,
+            rect.expand(2.0).translate(vec2(0.0, 2.0)),
+            radius + 1.0,
+            shadow.with_alpha(shadow.a * 0.35),
+        );
+    }
+    dl.rect_stroked(Layer::Popup, rect, radius, theme.c(Col::Popup), theme.c(Col::PopupBorder), 1.0);
+}
+
+/// A rounded status dot (used for the button "hot" state and radio marks).
+fn dot(dl: &mut DrawList, center: Vec2, r: f32, color: Color) {
+    dl.rect(Layer::Nodes, Rect::from_center_size(center, vec2(r * 2.0, r * 2.0)), r, color);
 }
 
 /// Split a row into its label and control areas. Blender-style sockets show
@@ -98,6 +132,8 @@ fn draw_row_label(dl: &mut DrawList, rect: Rect, text: &str, theme: &Theme) {
     dl.text(Layer::Nodes, vec2(rect.min.x, rect.center().y), &t, size, theme.c(Col::Text), Align::Left);
 }
 
+/// A control row consisting of a pill/field body with centered text.
+/// A control row consisting of a pill/field body with centered text.
 fn centered_text(dl: &mut DrawList, rect: Rect, text: &str, theme: &Theme, color: Col, inset: f32) {
     let size = theme.n(Num::FontSize);
     let t = ellipsize(text, rect.width() - 2.0 * inset, size);
@@ -335,10 +371,28 @@ impl Widget for NumberField {
         draw_row_label(dl, lab, label, theme);
         let scrubbing = self.press.is_some_and(|p| p.scrubbing);
         draw_field(dl, ctrl, theme, self.hover != Zone::None, scrubbing, self.focused);
+        // Round stepper buttons that appear on hover/focus, with a hairline
+        // separator so they read as pressed-on caps rather than plain arrows.
         if self.hover != Zone::None || self.focused {
             let c = theme.c(Col::TextDim);
-            triangle(dl, vec2(ctrl.min.x + ARROW_W * 0.5, ctrl.center().y), 3.5, false, c);
-            triangle(dl, vec2(ctrl.max.x - ARROW_W * 0.5, ctrl.center().y), 3.5, true, c);
+            let sep = theme.c(Col::FieldBorder);
+            dl.line(
+                Layer::Nodes,
+                vec2(ctrl.min.x + ARROW_W, ctrl.min.y + 3.0),
+                vec2(ctrl.min.x + ARROW_W, ctrl.max.y - 3.0),
+                sep,
+                1.0,
+            );
+            dl.line(
+                Layer::Nodes,
+                vec2(ctrl.max.x - ARROW_W, ctrl.min.y + 3.0),
+                vec2(ctrl.max.x - ARROW_W, ctrl.max.y - 3.0),
+                sep,
+                1.0,
+            );
+            // Chevrons pointing out of the field.
+            triangle(dl, vec2(ctrl.min.x + ARROW_W * 0.5 - 1.0, ctrl.center().y), 3.2, false, c);
+            triangle(dl, vec2(ctrl.max.x - ARROW_W * 0.5 + 1.0, ctrl.center().y), 3.2, true, c);
         }
         centered_text(dl, ctrl, &value_text(value), theme, Col::FieldText, ARROW_W);
     }
@@ -478,10 +532,21 @@ impl Widget for Slider {
         draw_row_label(dl, lab, label, theme);
         draw_field(dl, ctrl, theme, self.hover, self.drag.is_some(), self.focused);
         let f = self.frac(value);
+        let r = theme.n(Num::FieldRadius);
+        let inner = ctrl.expand(-1.5);
         if f > 0.0 {
-            let fill = Rect::new(ctrl.min, vec2(ctrl.min.x + ctrl.width() * f, ctrl.max.y));
-            dl.rect(Layer::Nodes, fill, theme.n(Num::FieldRadius), theme.c(Col::SliderFill));
+            let fill = Rect::new(inner.min, vec2(inner.min.x + inner.width() * f, inner.max.y));
+            dl.rect(Layer::Nodes, fill, (r - 1.0).max(0.0), theme.c(Col::SliderFill));
         }
+        // A slim knob marks the handle position, like a modern range slider.
+        let kx = inner.min.x + inner.width() * f;
+        let knob = theme.c(Col::FieldText);
+        dl.rect(
+            Layer::Nodes,
+            Rect::from_center_size(vec2(kx, inner.center().y), vec2(3.0, inner.height() - 4.0)),
+            1.5,
+            knob.with_alpha(0.85),
+        );
         centered_text(dl, ctrl, &value_text(value), theme, Col::FieldText, 6.0);
     }
 }
@@ -551,11 +616,12 @@ impl Widget for Toggle {
         };
         match self.style {
             ToggleStyle::Checkbox => {
-                let b = Rect::from_min_size(vec2(rect.min.x, cy - 7.0), vec2(14.0, 14.0));
+                let b = Rect::from_center_size(vec2(rect.min.x + 8.0, cy), vec2(15.0, 15.0));
                 if self.focused {
-                    dl.rect_stroked(Layer::Nodes, b, 3.0, box_fill, theme.c(Col::FieldFocus), 1.5);
+                    dl.rect_stroked(Layer::Nodes, b, 4.0, box_fill, theme.c(Col::FieldFocus), 1.5);
                 } else {
-                    dl.rect(Layer::Nodes, b, 3.0, box_fill);
+                    dl.rect(Layer::Nodes, b, 4.0, box_fill);
+                    dl.rect_stroked(Layer::Nodes, b, 4.0, Color::TRANSPARENT, theme.c(Col::FieldBorder), 1.0);
                 }
                 if on {
                     let c = theme.c(Col::FieldText);
@@ -563,25 +629,31 @@ impl Widget for Toggle {
                         Layer::Nodes,
                         Prim::LineStrip {
                             points: vec![
-                                vec2(b.min.x + 3.0, cy),
+                                vec2(b.min.x + 3.5, cy + 0.5),
                                 vec2(b.min.x + 6.0, cy + 3.0),
-                                vec2(b.max.x - 3.0, cy - 3.5),
+                                vec2(b.max.x - 3.5, cy - 3.5),
                             ],
                             color: c,
-                            width: 1.5,
+                            width: 1.8,
                         },
                     );
                 }
-                dl.text(Layer::Nodes, vec2(b.max.x + 6.0, cy), label, size, theme.c(Col::Text), Align::Left);
+                dl.text(Layer::Nodes, vec2(b.max.x + 7.0, cy), label, size, theme.c(Col::Text), Align::Left);
             }
             ToggleStyle::Switch => {
-                let pill = Rect::from_min_size(vec2(rect.max.x - 28.0, cy - 7.0), vec2(28.0, 14.0));
-                dl.rect(Layer::Nodes, pill, 7.0, box_fill);
-                let knob_x = if on { pill.max.x - 7.0 } else { pill.min.x + 7.0 };
+                let pill = Rect::from_center_size(vec2(rect.max.x - 15.0, cy), vec2(30.0, 16.0));
+                let track = if on { theme.c(Col::ToggleOn) } else { box_fill };
+                dl.rect(Layer::Nodes, pill, 8.0, track);
+                if self.focused {
+                    dl.rect_stroked(Layer::Nodes, pill, 8.0, Color::TRANSPARENT, theme.c(Col::FieldFocus), 1.5);
+                }
+                // Knob hugs the ends and lifts slightly off the track.
+                let knob_x = if on { pill.max.x - 8.0 } else { pill.min.x + 8.0 };
+                dl.rect(Layer::Nodes, pill.expand(0.5), 8.5, theme.c(Col::FieldShadow).with_alpha(0.25));
                 dl.rect(
                     Layer::Nodes,
-                    Rect::from_center_size(vec2(knob_x, cy), vec2(10.0, 10.0)),
-                    5.0,
+                    Rect::from_center_size(vec2(knob_x, cy), vec2(12.0, 12.0)),
+                    6.0,
                     theme.c(Col::FieldText),
                 );
                 dl.text(Layer::Nodes, vec2(rect.min.x, cy), label, size, theme.c(Col::Text), Align::Left);
@@ -666,6 +738,10 @@ impl Widget for Button {
     fn draw(&self, dl: &mut DrawList, rect: Rect, _value: &Value, label: &str, theme: &Theme) {
         let (lab, ctrl) = split_row(rect, self.label_frac);
         draw_row_label(dl, lab, label, theme);
+        // Modern button: a raised pill with a top highlight and a press that
+        // sinks it (shifts down a hair and dims the fill).
+        let r = theme.n(Num::FieldRadius);
+        let body = if self.pressed { ctrl.translate(vec2(0.0, 1.0)) } else { ctrl };
         let fill = if self.pressed {
             theme.c(Col::FieldPressed)
         } else if self.hover {
@@ -673,9 +749,28 @@ impl Widget for Button {
         } else {
             theme.c(Col::FieldFill)
         };
-        let r = theme.n(Num::FieldRadius);
-        dl.rect(Layer::Nodes, ctrl, r, fill);
-        centered_text(dl, ctrl, label, theme, Col::FieldText, 6.0);
+        let shadow = theme.c(Col::FieldShadow);
+        if shadow.a > 0.0 && !self.pressed {
+            dl.rect(Layer::Nodes, ctrl.translate(vec2(0.0, 1.0)), r, shadow);
+        }
+        dl.rect(Layer::Nodes, body, r, fill);
+        let hi = theme.c(Col::NodeHighlight);
+        if hi.a > 0.0 {
+            dl.rect(Layer::Nodes, Rect::new(body.min, vec2(body.max.x, body.min.y + 1.0)), r, hi);
+        }
+        if self.focused {
+            dl.rect_stroked(
+                Layer::Nodes,
+                body,
+                r,
+                Color::TRANSPARENT,
+                theme.c(Col::FieldFocus),
+                theme.n(Num::FieldFocusWidth),
+            );
+        } else {
+            dl.rect_stroked(Layer::Nodes, body, r, Color::TRANSPARENT, theme.c(Col::FieldBorder), 1.0);
+        }
+        centered_text(dl, body, label, theme, Col::FieldText, 10.0);
     }
 }
 
@@ -834,33 +929,42 @@ impl Widget for Dropdown {
     fn draw(&self, dl: &mut DrawList, rect: Rect, value: &Value, label: &str, theme: &Theme) {
         let (lab, ctrl) = split_row(rect, self.label_frac);
         draw_row_label(dl, lab, label, theme);
-        draw_field(dl, ctrl, theme, self.field_hover || self.open, false, self.focused);
+        draw_field(dl, ctrl, theme, self.field_hover || self.open, self.open, self.focused);
         let cur = Dropdown::current(value);
         let name = self.options.get(cur).map_or("?", String::as_str);
         centered_text(dl, ctrl, name, theme, Col::FieldText, ARROW_W);
+        // Chevron (two strokes) instead of a filled triangle.
         let c = theme.c(Col::TextDim);
+        let cx = ctrl.max.x - 12.0;
+        let cy = ctrl.center().y;
         dl.push(
             Layer::Nodes,
-            Prim::Triangle {
-                p: [
-                    vec2(ctrl.max.x - 12.0, ctrl.center().y - 2.0),
-                    vec2(ctrl.max.x - 6.0, ctrl.center().y - 2.0),
-                    vec2(ctrl.max.x - 9.0, ctrl.center().y + 3.0),
-                ],
+            Prim::LineStrip {
+                points: vec![vec2(cx - 3.5, cy - 1.5), vec2(cx, cy + 2.0), vec2(cx + 3.5, cy - 1.5)],
                 color: c,
+                width: 1.6,
             },
         );
         if self.open {
             let pr = self.popup(rect);
-            dl.rect_stroked(Layer::Popup, pr, 4.0, theme.c(Col::Popup), theme.c(Col::PopupBorder), 1.0);
+            draw_panel(dl, pr, theme, 5.0);
             let size = theme.n(Num::FontSize);
             for (i, o) in self.options.iter().enumerate() {
                 let row = Rect::from_min_size(vec2(pr.min.x, pr.min.y + i as f32 * ROW_H), vec2(pr.width(), ROW_H));
                 if self.hover == Some(i) {
-                    dl.rect(Layer::Popup, row.expand(-1.0), 3.0, theme.c(Col::PopupHover));
+                    dl.rect(Layer::Popup, row.expand(-3.0), 4.0, theme.c(Col::PopupHover));
+                } else if Dropdown::current(value) == i {
+                    dot(dl, vec2(row.min.x + 7.0, row.center().y), 2.5, theme.c(Col::Selected));
                 }
-                let t = ellipsize(o, row.width() - 16.0, size);
-                dl.text(Layer::Popup, vec2(row.min.x + 8.0, row.center().y), &t, size, theme.c(Col::Text), Align::Left);
+                let t = ellipsize(o, row.width() - 20.0, size);
+                dl.text(
+                    Layer::Popup,
+                    vec2(row.min.x + 14.0, row.center().y),
+                    &t,
+                    size,
+                    theme.c(Col::Text),
+                    Align::Left,
+                );
             }
         }
     }
@@ -1154,10 +1258,9 @@ impl Widget for ColorPicker {
 
     fn draw(&self, dl: &mut DrawList, rect: Rect, value: &Value, label: &str, theme: &Theme) {
         let Value::Color(c) = value else { return };
-        let fr = theme.n(Num::FieldRadius);
         let (lab, ctrl) = split_row(rect, self.label_frac);
         draw_row_label(dl, lab, label, theme);
-        dl.rect(Layer::Nodes, ctrl, fr, field_fill(theme, self.hover || self.open, false));
+        draw_field(dl, ctrl, theme, self.hover || self.open, self.open, false);
         let size = theme.n(Num::FontSize);
         let swatch_w = ctrl.width().clamp(24.0, 90.0);
         let sw =
@@ -1166,12 +1269,13 @@ impl Widget for ColorPicker {
             Layer::Nodes,
             Prim::Checker { rect: sw, cell: 4.0, a: theme.c(Col::CheckerA), b: theme.c(Col::CheckerB) },
         );
-        dl.rect(Layer::Nodes, sw, 2.0, *c);
+        dl.rect(Layer::Nodes, sw, 3.0, *c);
         let left_half = Rect::new(sw.min, vec2(sw.center().x, sw.max.y));
-        dl.rect(Layer::Nodes, left_half, 2.0, c.with_alpha(1.0));
+        dl.rect(Layer::Nodes, left_half, 3.0, c.with_alpha(1.0));
+        dl.rect_stroked(Layer::Nodes, sw, 3.0, Color::TRANSPARENT, theme.c(Col::FieldBorder), 1.0);
         dl.text(
             Layer::Nodes,
-            vec2(ctrl.min.x + 6.0, ctrl.center().y),
+            vec2(ctrl.min.x + 8.0, ctrl.center().y),
             &c.to_hex(),
             size,
             theme.c(Col::FieldText),
@@ -1180,7 +1284,7 @@ impl Widget for ColorPicker {
 
         if self.open {
             let lay = popup_layout(rect);
-            dl.rect_stroked(Layer::Popup, lay.panel, 4.0, theme.c(Col::Popup), theme.c(Col::PopupBorder), 1.0);
+            draw_panel(dl, lay.panel, theme, 6.0);
             let hue_col = srgb_color(hsv_to_rgb(self.hsv[0], 1.0, 1.0), 1.0);
             dl.push(
                 Layer::Popup,
@@ -1193,11 +1297,19 @@ impl Widget for ColorPicker {
             let knob = |dl: &mut DrawList, p: Vec2| {
                 dl.rect_stroked(
                     Layer::Popup,
-                    Rect::from_center_size(p, vec2(9.0, 9.0)),
-                    4.5,
+                    Rect::from_center_size(p, vec2(11.0, 11.0)),
+                    5.5,
+                    Color::TRANSPARENT,
+                    Color::BLACK.with_alpha(0.4),
+                    3.0,
+                );
+                dl.rect_stroked(
+                    Layer::Popup,
+                    Rect::from_center_size(p, vec2(11.0, 11.0)),
+                    5.5,
                     Color::TRANSPARENT,
                     Color::WHITE,
-                    1.5,
+                    1.8,
                 );
             };
             knob(dl, cur);
@@ -1221,7 +1333,7 @@ impl Widget for ColorPicker {
             let clear = opaque.with_alpha(0.0);
             dl.push(Layer::Popup, Prim::GradientQuad { rect: lay.alpha, colors: [clear, opaque, clear, opaque] });
             knob(dl, vec2(lay.alpha.min.x + self.alpha * lay.alpha.width(), lay.alpha.center().y));
-            dl.rect(Layer::Popup, lay.hex, fr, theme.c(Col::FieldFill));
+            draw_field(dl, lay.hex, theme, true, false, false);
             dl.text(Layer::Popup, lay.hex.center(), &c.to_hex(), size, theme.c(Col::FieldText), Align::Center);
         }
     }
