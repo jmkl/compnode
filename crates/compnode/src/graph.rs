@@ -45,7 +45,7 @@ pub struct Node<N> {
     width: f32,
     /// Optional per-row heights. Empty means uniform [`layout::ROW_H`] rows.
     rows: Vec<f32>,
-    in_wires: Vec<Option<WireId>>,
+    in_wires: Vec<Vec<WireId>>,
     out_wires: Vec<Vec<WireId>>,
     /// Topological position: every wire goes from a lower to a higher `ord`.
     ord: u64,
@@ -91,9 +91,18 @@ impl<N> Node<N> {
     pub fn out_pos(&self, i: usize) -> Vec2 {
         vec2(self.pos.x + self.width, self.pos.y + self.pin_dy(i))
     }
-    /// The (single) wire feeding input `i`.
+    /// The first wire feeding input `i`, if any. Single-input sockets have at
+    /// most one; multi-input sockets may have several (see [`Self::input_wires`]).
     pub fn input_wire(&self, i: usize) -> Option<WireId> {
-        self.in_wires.get(i).copied().flatten()
+        self.in_wires.get(i).and_then(|v| v.first()).copied()
+    }
+    /// Every wire feeding input `i`, in connection order (multi-input sockets).
+    pub fn input_wires(&self, i: usize) -> &[WireId] {
+        self.in_wires.get(i).map_or(&[], |v| v.as_slice())
+    }
+    /// How many wires feed input `i`.
+    pub fn input_wire_count(&self, i: usize) -> usize {
+        self.in_wires.get(i).map_or(0, Vec::len)
     }
     /// Wires leaving output `i`.
     pub fn output_wires(&self, i: usize) -> &[WireId] {
@@ -189,7 +198,7 @@ impl<N> Graph<N> {
             pos,
             width,
             rows: Vec::new(),
-            in_wires: vec![None; inputs],
+            in_wires: vec![Vec::new(); inputs],
             out_wires: vec![Vec::new(); outputs],
             ord: self.next_ord,
         };
@@ -277,20 +286,34 @@ impl<N> Graph<N> {
         Ok(())
     }
 
-    /// Insert the wire (replacing any wire already on the input) and index it.
-    /// Pins must already be validated.
+    /// Insert the wire and index it. Pins must already be validated. Any wire
+    /// already on the input is left in place (single-input replacement is a
+    /// higher-level policy); call [`Graph::disconnect_input`] first to replace.
     fn insert_wire(&mut self, from: OutPin, to: InPin) -> WireId {
         let a = self.nodes.get(from.node).expect("validated").out_pos(from.index);
         let b = self.nodes.get(to.node).expect("validated").in_pos(to.index);
-        if let Some(old) = self.nodes.get(to.node).expect("validated").in_wires[to.index] {
-            self.disconnect(old);
-        }
         let bbox = wire_bbox(a, b);
         let id = self.wires.insert(Wire { from, to, bbox });
         self.nodes.get_mut(from.node).expect("validated").out_wires[from.index].push(id);
-        self.nodes.get_mut(to.node).expect("validated").in_wires[to.index] = Some(id);
+        self.nodes.get_mut(to.node).expect("validated").in_wires[to.index].push(id);
         self.wire_grid.update(id, &bbox);
         id
+    }
+
+    /// Remove every wire feeding input `(node, index)` and return them.
+    pub fn disconnect_input(&mut self, node: NodeId, index: usize) -> Vec<WireId> {
+        let old: Vec<WireId> = self.nodes.get(node).and_then(|n| n.in_wires.get(index)).cloned().unwrap_or_default();
+        for &w in &old {
+            self.disconnect(w);
+        }
+        old
+    }
+
+    /// Disconnect just the wire at position `slot` of input `(node, index)`.
+    pub fn disconnect_input_at(&mut self, node: NodeId, index: usize, slot: usize) -> Option<WireId> {
+        let w = *self.nodes.get(node).and_then(|n| n.in_wires.get(index))?.get(slot)?;
+        self.disconnect(w);
+        Some(w)
     }
 
     /// `true` if `to` is reachable from `from` by following wires
@@ -324,13 +347,25 @@ impl<N> Graph<N> {
         if self.reaches(to.node, from.node) { Err(ConnectError::Cycle) } else { Ok(()) }
     }
 
-    /// Connect an output to an input. An input accepts a single wire, so an
-    /// existing one is replaced. Rejects self-loops, bad pins and cycles.
+    /// Connect an output to an input, appending the wire. An input may carry
+    /// several wires (multi-input sockets). Rejects self-loops, bad pins and
+    /// cycles.
     pub fn connect(&mut self, from: OutPin, to: InPin) -> Result<WireId, ConnectError> {
         self.check_pins(from, to)?;
         if !self.order_edge(from.node, to.node) {
             return Err(ConnectError::Cycle);
         }
+        Ok(self.insert_wire(from, to))
+    }
+
+    /// Connect an output to a single-input socket: any wire already on the
+    /// input is replaced.
+    pub fn connect_replacing(&mut self, from: OutPin, to: InPin) -> Result<WireId, ConnectError> {
+        self.check_pins(from, to)?;
+        if !self.order_edge(from.node, to.node) {
+            return Err(ConnectError::Cycle);
+        }
+        self.disconnect_input(to.node, to.index);
         Ok(self.insert_wire(from, to))
     }
 
@@ -410,9 +445,8 @@ impl<N> Graph<N> {
         }
         if let Some(n) = self.nodes.get_mut(w.to.node)
             && let Some(slot) = n.in_wires.get_mut(w.to.index)
-            && *slot == Some(id)
         {
-            *slot = None;
+            slot.retain(|x| *x != id);
         }
         self.wire_grid.remove(id);
         true
@@ -560,15 +594,32 @@ mod tests {
     }
 
     #[test]
-    fn connect_replaces_existing_input() {
+    fn connect_replacing_replaces_existing_input() {
         let (mut g, a, b, _) = three();
         let w1 = g.connect(out(a, 0), inp(b, 0)).unwrap();
-        let w2 = g.connect(out(a, 1), inp(b, 0)).unwrap();
+        let w2 = g.connect_replacing(out(a, 1), inp(b, 0)).unwrap();
         assert_eq!(g.wire_count(), 1);
         assert!(g.wire(w1).is_none());
         assert_eq!(g.node(b).unwrap().input_wire(0), Some(w2));
         assert!(g.node(a).unwrap().output_wires(0).is_empty());
         assert_eq!(g.node(a).unwrap().output_wires(1), &[w2]);
+    }
+
+    #[test]
+    fn connect_appends_multiple_wires_to_one_input() {
+        let (mut g, a, b, _) = three();
+        let w1 = g.connect(out(a, 0), inp(b, 0)).unwrap();
+        let w2 = g.connect(out(a, 1), inp(b, 0)).unwrap();
+        assert_eq!(g.wire_count(), 2);
+        assert_eq!(g.node(b).unwrap().input_wire_count(0), 2);
+        assert_eq!(g.node(b).unwrap().input_wires(0), &[w1, w2]);
+        assert_eq!(g.node(b).unwrap().input_wire(0), Some(w1));
+        // Remove just the first wire; the second stays.
+        assert_eq!(g.disconnect_input_at(b, 0, 0), Some(w1));
+        assert_eq!(g.node(b).unwrap().input_wires(0), &[w2]);
+        // Replace removes the rest.
+        g.disconnect_input(b, 0);
+        assert_eq!(g.node(b).unwrap().input_wire_count(0), 0);
     }
 
     #[test]

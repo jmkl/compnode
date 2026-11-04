@@ -280,6 +280,12 @@ impl Document {
         self.link_of_wire(n.input_wire(input)?)
     }
 
+    /// Every link feeding input `input` of `uid`, in connection order.
+    pub fn input_links(&self, uid: u64, input: usize) -> Vec<Link> {
+        let Some(n) = self.id_of(uid).and_then(|id| self.graph.node(id)) else { return Vec::new() };
+        n.input_wires(input).iter().filter_map(|&w| self.link_of_wire(w)).collect()
+    }
+
     /// Snapshot of nodes plus their links. With `external` the links that
     /// leave the set are included too (needed to undo a deletion); without
     /// it only links between the nodes are (copy and paste).
@@ -325,14 +331,24 @@ impl Document {
         Some((OutPin { node: f, index: link.from.1 }, InPin { node: t, index: link.to.1 }))
     }
 
-    /// Connect (replacing whatever feeds that input).
+    /// Connect (replacing whatever feeds that input, unless it is a
+    /// multi-input socket, in which case the wire is appended).
     pub fn connect(&mut self, link: Link) -> Result<(), ConnectError> {
         let (o, i) = self.pins(link).ok_or(ConnectError::NoSuchNode)?;
-        self.graph.connect(o, i)?;
+        if self.is_multi_input(link.to.0, link.to.1) {
+            self.graph.connect(o, i)?;
+        } else {
+            self.graph.connect_replacing(o, i)?;
+        }
         self.mark_layout(link.to.0);
         self.changes.push(Change::Structure { uids: vec![link.to.0] });
         self.touch();
         Ok(())
+    }
+
+    /// Whether input `input` of `uid` accepts multiple wires.
+    pub fn is_multi_input(&self, uid: u64, input: usize) -> bool {
+        self.schema_of(uid).and_then(|s| s.inputs.get(input)).is_some_and(|d| d.multi)
     }
 
     /// Dry run of [`Document::connect`].

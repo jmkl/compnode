@@ -90,6 +90,9 @@ pub struct SocketDef {
     pub soft_min: f32,
     pub soft_max: f32,
     pub options: Vec<String>,
+    /// A multi-input socket accepts any number of incoming wires (e.g. the
+    /// Output node's layer list). Single-input sockets replace on connect.
+    pub multi: bool,
 }
 
 impl SocketDef {
@@ -105,6 +108,7 @@ impl SocketDef {
             soft_min: f32::NEG_INFINITY,
             soft_max: f32::INFINITY,
             options: Vec::new(),
+            multi: false,
         }
     }
     pub fn float(name: &str, default: f32) -> SocketDef {
@@ -144,6 +148,11 @@ impl SocketDef {
     }
     pub fn options(mut self, opts: &[&str]) -> SocketDef {
         self.options = opts.iter().map(|s| s.to_string()).collect();
+        self
+    }
+    /// Mark the socket as a multi-input (accepts any number of wires).
+    pub fn multi(mut self) -> SocketDef {
+        self.multi = true;
         self
     }
     /// Range for a slider: soft range, else hard range, else `0..1`.
