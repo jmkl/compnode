@@ -25,6 +25,24 @@ use std::time::{Duration, Instant};
 const CANVAS_HANDLE: u64 = u64::MAX;
 const THUMB_SIZE: u32 = 192;
 
+/// Nerd Font (private-use) glyphs for the GUI icons. Codepoints are from the
+/// Material Design Icons set (`nf-md-*`) that 3270 Nerd Font carries.
+const ICON_SELECT: &str = "\u{f0481}"; // nf-md-cursor_default
+const ICON_ADD: &str = "\u{f0415}"; // nf-md-plus
+const ICON_DUPLICATE: &str = "\u{f018f}"; // nf-md-content_copy
+const ICON_FRAME: &str = "\u{f0f9c}"; // nf-md-arrow_expand
+const ICON_VIEW_ALL: &str = "\u{f0ac9}"; // nf-md-fit_to_page
+const ICON_MUTE: &str = "\u{f058f}"; // nf-md-eye_off
+const ICON_CUT: &str = "\u{f0d79}"; // nf-md-content_cut
+const ICON_UNDO: &str = "\u{f054c}"; // nf-md-undo
+const ICON_REDO: &str = "\u{f044e}"; // nf-md-redo
+const ICON_DELETE: &str = "\u{f0a79}"; // nf-md-trash_can
+
+/// Font for a GUI icon: the bundled Nerd Font, by family name.
+fn icon_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("icons".into()))
+}
+
 struct ShapeCache {
     key: (DrawKey, u32, u32, u32),
     origin: compnode::Vec2,
@@ -231,6 +249,7 @@ impl App {
             }
         }
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
+        setup_fonts(&cc.egui_ctx);
         let bench = args.bench.map(|n| Bench { target: 240, samples: Vec::new(), nodes: n });
         let mut app = App {
             ed,
@@ -928,16 +947,16 @@ impl App {
                 ui.separator();
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Shift+A: Add node").clicked() {
+                    if ui.button(format!("{ICON_ADD}  Add node")).clicked() {
                         self.open_add_menu_at_cursor();
                     }
-                    if ui.button("Graph").clicked() {
+                    if ui.button(format!("{ICON_VIEW_ALL}  Graph")).clicked() {
                         self.ed.view_all();
                     }
-                    if self.ed.can_undo() && ui.button("Undo").clicked() {
+                    if self.ed.can_undo() && ui.button(format!("{ICON_UNDO}  Undo")).clicked() {
                         self.ed.undo();
                     }
-                    if self.ed.can_redo() && ui.button("Redo").clicked() {
+                    if self.ed.can_redo() && ui.button(format!("{ICON_REDO}  Redo")).clicked() {
                         self.ed.redo();
                     }
                 });
@@ -950,28 +969,29 @@ impl App {
         egui::Panel::left("toolbar").resizable(false).default_size(44.0).show(root, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(4.0);
-                let btn = |ui: &mut egui::Ui, label: &str, tip: &str| -> bool {
-                    ui.add(egui::Button::new(label)).on_hover_text(tip).clicked()
+                let icon = |c: &str| egui::RichText::new(c).font(icon_font(18.0));
+                let btn = |ui: &mut egui::Ui, c: &str, tip: &str| -> bool {
+                    ui.add(egui::Button::new(icon(c))).on_hover_text(tip).clicked()
                 };
                 // T stays the active tool (no tool switching yet); the others
                 // map directly onto existing editor actions.
-                let _ = btn(ui, "T", "Select tool (T)");
-                if btn(ui, "A", "Add node (Shift+A)") {
+                let _ = btn(ui, ICON_SELECT, "Select tool (T)");
+                if btn(ui, ICON_ADD, "Add node (Shift+A)") {
                     self.open_add_menu_at_cursor();
                 }
-                if btn(ui, "D", "Duplicate selection (Ctrl+D)") {
+                if btn(ui, ICON_DUPLICATE, "Duplicate selection (Ctrl+D)") {
                     self.ed.duplicate();
                 }
-                if btn(ui, "F", "Frame selection (F)") {
+                if btn(ui, ICON_FRAME, "Frame selection (F)") {
                     self.ed.frame_selected();
                 }
-                if btn(ui, "G", "View all (Home)") {
+                if btn(ui, ICON_VIEW_ALL, "View all (Home)") {
                     self.ed.view_all();
                 }
-                if btn(ui, "M", "Mute selected (M)") {
+                if btn(ui, ICON_MUTE, "Mute selected (M)") {
                     self.ed.toggle_mute();
                 }
-                if btn(ui, "C", "Cut links (Ctrl + right-drag)") {
+                if btn(ui, ICON_CUT, "Cut links (Ctrl + right-drag)") {
                     self.status = "Cut links: Ctrl + right-drag across wires".to_string();
                 }
             });
@@ -1197,27 +1217,29 @@ impl App {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_width(220.0);
                     let has_ctx = uid.is_some_and(|u| self.ed.doc.contains(u));
-                    let mut items: Vec<(ContextAction, &'static str, &'static str)> = Vec::new();
+                    let mut items: Vec<(ContextAction, &'static str, &'static str, &'static str)> = Vec::new();
                     if has_ctx {
                         let Some(uid) = uid else { return ui.response() };
                         let schema = self.ed.doc.data(uid).map(|d| d.schema.clone()).unwrap_or_default();
                         items.push((
                             ContextAction::Add { schema, pos: graph_pos + vec2(80.0, -70.0) },
+                            ICON_ADD,
                             "Add node",
                             "Add",
                         ));
-                        items.push((ContextAction::Duplicate, "Duplicate", "Ctrl+D"));
-                        items.push((ContextAction::Delete, "Delete", "Del"));
-                        items.push((ContextAction::Mute, "Mute", "M"));
-                        items.push((ContextAction::Frame, "Frame", "Frame"));
+                        items.push((ContextAction::Duplicate, ICON_DUPLICATE, "Duplicate", "Ctrl+D"));
+                        items.push((ContextAction::Delete, ICON_DELETE, "Delete", "Del"));
+                        items.push((ContextAction::Mute, ICON_MUTE, "Mute", "M"));
+                        items.push((ContextAction::Frame, ICON_FRAME, "Frame", "Frame"));
                     } else {
-                        items.push((ContextAction::AddHere { pos: graph_pos }, "Add node", "Shift+A"));
+                        items.push((ContextAction::AddHere { pos: graph_pos }, ICON_ADD, "Add node", "Shift+A"));
                     }
                     let count = items.len();
                     let mut idx = c.highlight.min(count.saturating_sub(1));
-                    for (i, (op, label, shortcut)) in items.iter().enumerate() {
+                    for (i, (op, icon, label, shortcut)) in items.iter().enumerate() {
                         let selected = i == idx;
-                        let row = ui.selectable_label(selected, format!("{label}   {shortcut}"));
+                        let text = egui::RichText::new(format!("{icon}  {label}      {shortcut}"));
+                        let row = ui.selectable_label(selected, text);
                         if row.clicked() {
                             self.context_action(op.clone());
                             close = true;
@@ -1430,4 +1452,34 @@ impl eframe::App for App {
         self.frame_ms.push(ms);
         self.run_bench_step(ctx, ms);
     }
+}
+
+/// Install the editor's bundled fonts: Inter for UI text and 3270 Nerd Font
+/// for GUI icons (its private-use glyphs carry the toolbar/menu symbols).
+fn setup_fonts(ctx: &egui::Context) {
+    use egui::{FontData, FontDefinitions, FontFamily, FontInsert, FontPriority, InsertFontFamily};
+
+    const INTER: &[u8] = include_bytes!("../assets/fonts/Inter.ttf");
+    const NERD: &[u8] = include_bytes!("../assets/fonts/3270NerdFont-Regular.ttf");
+
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert("inter".to_owned(), Arc::new(FontData::from_static(INTER)));
+    fonts.font_data.insert("nerd".to_owned(), Arc::new(FontData::from_static(NERD)));
+
+    // Inter is the primary UI font; the Nerd Font is the last fallback so its
+    // private-use icon glyphs resolve without changing the text look.
+    let proportional = fonts.families.get_mut(&FontFamily::Proportional).expect("proportional family");
+    proportional.insert(0, "inter".to_owned());
+    proportional.push("nerd".to_owned());
+    let monospace = fonts.families.get_mut(&FontFamily::Monospace).expect("monospace family");
+    monospace.push("nerd".to_owned());
+    ctx.set_fonts(fonts);
+
+    // A named "icons" family backed by the Nerd Font, so icon labels can opt in
+    // explicitly with `FontId::new(size, FontFamily::Name("icons".into()))`.
+    ctx.add_font(FontInsert::new(
+        "icons",
+        FontData::from_static(NERD),
+        vec![InsertFontFamily { family: FontFamily::Name("icons".into()), priority: FontPriority::Highest }],
+    ));
 }
